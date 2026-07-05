@@ -71,6 +71,43 @@ let pointsSinceSnapshot = 0;
 let finalizing = false;
 let lastFixAt: number | null = null;
 
+// ---------------------------------------------------------------------------
+// Diagnostics — surfaced live on the Tracking settings screen so a real drive
+// produces actionable data instead of a silent "waiting" notification.
+// ---------------------------------------------------------------------------
+
+interface Diagnostics {
+  updatesReceived: number;
+  lastFixAt: number | null;
+  lastLat: number | null;
+  lastLng: number | null;
+  lastSpeedKmh: number | null;
+  lastError: string | null;
+  serviceRunning: boolean;
+  mode: TrackingMode;
+}
+
+const diag: Diagnostics = {
+  updatesReceived: 0,
+  lastFixAt: null,
+  lastLat: null,
+  lastLng: null,
+  lastSpeedKmh: null,
+  lastError: null,
+  serviceRunning: false,
+  mode: 'off',
+};
+
+export async function getDiagnostics(): Promise<Diagnostics> {
+  let serviceRunning = false;
+  try {
+    serviceRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+  } catch {
+    serviceRunning = false;
+  }
+  return { ...diag, serviceRunning, mode };
+}
+
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -119,12 +156,13 @@ export function setLivePurpose(purpose: string): void {
 
 function monitorOptions(): Location.LocationTaskOptions {
   // High accuracy (GPS) is required: balanced/fused fixes on Android often
-  // arrive without speed and too sparsely for driving detection to trigger.
-  // distanceInterval gates updates while parked, so battery cost stays low.
+  // arrive without speed. distanceInterval is 0 (time-based only) so a fix
+  // arrives every ~10 s regardless of movement — detection can never be
+  // starved by a distance gate that GPS jitter fails to cross.
   return {
     accuracy: Location.Accuracy.High,
-    timeInterval: 15000,
-    distanceInterval: 50,
+    timeInterval: 10000,
+    distanceInterval: 0,
     showsBackgroundLocationIndicator: true,
     foregroundService: {
       notificationTitle: 'Mileage Tracker',
@@ -417,7 +455,11 @@ function effectiveSpeedKmh(prev: EnginePoint | null, point: EnginePoint): number
 export async function handleLocationUpdates(
   locations: Location.LocationObject[]
 ): Promise<void> {
-  await restoreIfNeeded();
+  try {
+    await restoreIfNeeded();
+  } catch (err) {
+    diag.lastError = `restore: ${String(err)}`;
+  }
 
   // Updates are flowing, so the service is on even if this is a fresh
   // headless process; without an active trip that means we're monitoring.
@@ -427,66 +469,135 @@ export async function handleLocationUpdates(
     const point = toEnginePoint(loc);
     lastFixAt = point.t;
 
-    if (mode === 'monitoring') {
-      monitorBuffer.push(point);
-      const cutoff = point.t - MONITOR_BUFFER_MS;
-      monitorBuffer = monitorBuffer.filter((p) => p.t >= cutoff);
+    // Record diagnostics for every fix received.
+    diag.updatesReceived++;
+    diag.lastFixAt = point.t;
+    diag.lastLat = point.lat;
+    diag.lastLng = point.lng;
+    diag.lastSpeedKmh = point.speed;
 
-      // GPS doppler speed is reliable when present — one fast fix is enough.
-      let driving = point.speed != null && point.speed >= SPEED_START_KMH;
+    try {
+      if (mode === 'monitoring') {
+        monitorBuffer.push(point);
+        const cutoff = point.t - MONITOR_BUFFER_MS;
+        monitorBuffer = monitorBuffer.filter((p) => p.t >= cutoff);
 
-      // Fallback for fixes without speed (or sparse updates): moved far
-      // enough from any recent buffered point at a driving pace.
-      if (!driving) {
-        for (const old of monitorBuffer) {
-          if (old.t >= point.t) continue;
-          const km = haversineKm(old.lat, old.lng, point.lat, point.lng);
-          const hours = (point.t - old.t) / 3600000;
-          if (km >= START_DISPLACEMENT_KM && km / hours >= SPEED_START_KMH) {
-            driving = true;
-            break;
+        // GPS doppler speed is reliable when present — one fast fix is enough.
+        let driving = point.speed != null && point.speed >= SPEED_START_KMH;
+
+        // Fallback for fixes without speed (or sparse updates): moved far
+        // enough from any recent buffered point at a driving pace.
+        if (!driving) {
+          for (const old of monitorBuffer) {
+            if (old.t >= point.t) continue;
+            const km = haversineKm(old.lat, old.lng, point.lat, point.lng);
+            const hours = (point.t - old.t) / 3600000;
+            if (km >= START_DISPLACEMENT_KM && km / hours >= SPEED_START_KMH) {
+              driving = true;
+              break;
+            }
           }
         }
-      }
 
-      if (driving) {
-        if (await isPaused()) continue;
-        await beginRecording(monitorBuffer, false);
-      }
-    } else if (mode === 'recording' && trip) {
-      const prev = trip.points[trip.points.length - 1] ?? null;
-
-      // Filter parked GPS drift so it doesn't inflate distance.
-      if (prev) {
-        const meters = haversineKm(prev.lat, prev.lng, point.lat, point.lng) * 1000;
-        if (meters < JITTER_MIN_M) {
-          const speed = effectiveSpeedKmh(prev, point);
-          if (speed >= SPEED_MOVING_KMH) trip.lastMovementAt = point.t;
-          continue;
+        if (driving) {
+          if (await isPaused()) continue;
+          await beginRecording(monitorBuffer, false);
         }
-        trip.km += meters / 1000;
-      }
+      } else if (mode === 'recording' && trip) {
+        const prev = trip.points[trip.points.length - 1] ?? null;
 
-      trip.points.push(point);
-      const speed = effectiveSpeedKmh(prev, point);
-      if (speed >= SPEED_MOVING_KMH) {
-        trip.lastMovementAt = point.t;
-      }
+        // Filter parked GPS drift so it doesn't inflate distance.
+        if (prev) {
+          const meters = haversineKm(prev.lat, prev.lng, point.lat, point.lng) * 1000;
+          if (meters < JITTER_MIN_M) {
+            const speed = effectiveSpeedKmh(prev, point);
+            if (speed >= SPEED_MOVING_KMH) trip.lastMovementAt = point.t;
+            continue;
+          }
+          trip.km += meters / 1000;
+        }
 
-      pointsSinceSnapshot++;
-      if (pointsSinceSnapshot >= SNAPSHOT_EVERY_N_POINTS) {
-        await persistSnapshot();
-      }
+        trip.points.push(point);
+        const speed = effectiveSpeedKmh(prev, point);
+        if (speed >= SPEED_MOVING_KMH) {
+          trip.lastMovementAt = point.t;
+        }
 
-      // Idle past the auto-stop timer → the trip ended when movement stopped.
-      if (point.t - trip.lastMovementAt >= (await autoStopMs())) {
-        await finalizeTrip();
-        break;
+        pointsSinceSnapshot++;
+        if (pointsSinceSnapshot >= SNAPSHOT_EVERY_N_POINTS) {
+          await persistSnapshot();
+        }
+
+        // Idle past the auto-stop timer → the trip ended when movement stopped.
+        if (point.t - trip.lastMovementAt >= (await autoStopMs())) {
+          await finalizeTrip();
+          break;
+        }
       }
+    } catch (err) {
+      diag.lastError = `process: ${String(err)}`;
+      console.error('[AutoTracking] Error processing point:', err);
     }
   }
 
   emit();
+}
+
+export interface TestResult {
+  triggered: boolean;
+  kmRecorded: number;
+  error: string | null;
+}
+
+/**
+ * Diagnostic: inject a synthetic sequence of driving fixes to force the
+ * monitoring → recording transition without needing to actually drive, then
+ * finalize the resulting test trip so nothing lingers. If `triggered` is
+ * true, the detection pipeline is healthy and any field failure is purely
+ * GPS delivery (permission / battery / OS suppression).
+ */
+export async function injectTestDrivingFixes(): Promise<TestResult> {
+  try {
+    if (mode === 'recording') {
+      return { triggered: false, kmRecorded: 0, error: 'A trip is already recording — stop it first.' };
+    }
+
+    // Force monitoring state without depending on real GPS permission.
+    mode = 'monitoring';
+    monitorBuffer = [];
+
+    const now = Date.now();
+    const baseLat = 45.5017;
+    const baseLng = -73.5673;
+    // Fixes ~150 m apart, 5 s each → ~108 km/h, with explicit doppler speed.
+    const synthetic: Location.LocationObject[] = [0, 1, 2, 3].map((i) => ({
+      coords: {
+        latitude: baseLat + i * 0.00135,
+        longitude: baseLng,
+        altitude: null,
+        accuracy: 5,
+        altitudeAccuracy: null,
+        heading: 0,
+        speed: 30, // m/s ≈ 108 km/h
+      },
+      timestamp: now + i * 5000,
+    })) as unknown as Location.LocationObject[];
+
+    await handleLocationUpdates(synthetic);
+
+    const triggered = getLiveTripState().isTracking;
+    const kmRecorded = trip?.km ?? 0;
+
+    // Clean up: finalize the synthetic trip (saves a short, deletable trip)
+    // or ensure we return to monitoring if it somehow didn't trigger.
+    if (triggered) {
+      await finalizeTrip();
+    }
+
+    return { triggered, kmRecorded, error: diag.lastError };
+  } catch (err) {
+    return { triggered: false, kmRecorded: 0, error: String(err) };
+  }
 }
 
 // ---------------------------------------------------------------------------

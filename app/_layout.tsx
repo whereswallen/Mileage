@@ -1,6 +1,7 @@
 import '../tasks/locationTask';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+import { View, ActivityIndicator } from 'react-native';
 import { Stack } from 'expo-router';
 import { ThemeProvider, useThemeContext } from '../contexts/ThemeContext';
 import { VehicleProvider } from '../contexts/VehicleContext';
@@ -41,11 +42,17 @@ function RootStack(): React.JSX.Element {
 }
 
 export default function RootLayout(): React.JSX.Element {
+  const [dbReady, setDbReady] = useState(false);
+
   useEffect(() => {
     const init = async () => {
+      // Open + migrate the database FIRST, before any screen can query it,
+      // so no hook races an uninitialized connection.
       await getDatabase();
-      await setupNotifications();
-      await initAutoTracking();
+      setDbReady(true);
+      // Non-blocking: these don't gate the UI.
+      setupNotifications().catch(() => {});
+      initAutoTracking().catch(() => {});
     };
     init();
   }, []);
@@ -54,9 +61,18 @@ export default function RootLayout(): React.JSX.Element {
     <ThemeProvider>
       <VehicleProvider>
         <TripTrackerProvider>
-          <RootStack />
+          {dbReady ? <RootStack /> : <SplashGate />}
         </TripTrackerProvider>
       </VehicleProvider>
     </ThemeProvider>
+  );
+}
+
+function SplashGate(): React.JSX.Element {
+  const { colors } = useThemeContext();
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
+      <ActivityIndicator size="large" color={colors.primary} />
+    </View>
   );
 }

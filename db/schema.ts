@@ -1,12 +1,33 @@
 import * as SQLite from 'expo-sqlite';
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
+// Single-flight guard: without this, concurrent getDatabase() callers (the
+// root layout init racing screen hooks and the background task at launch)
+// each run openDatabaseAsync + migrations, leaving dbInstance pointing at a
+// superseded native connection whose handle is null — every later query then
+// fails with "NativeDatabase.prepareAsync rejected: NullPointerException".
+let dbInitPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (dbInstance) {
     return dbInstance;
   }
+  if (dbInitPromise) {
+    return dbInitPromise;
+  }
 
+  dbInitPromise = initDatabase();
+  try {
+    dbInstance = await dbInitPromise;
+    return dbInstance;
+  } catch (err) {
+    // Allow a later call to retry a failed initialization.
+    dbInitPromise = null;
+    throw err;
+  }
+}
+
+async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
   const db = await SQLite.openDatabaseAsync('mileage.db');
 
   await db.execAsync(`PRAGMA journal_mode = WAL;`);
@@ -143,6 +164,5 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
     );
   }
 
-  dbInstance = db;
   return db;
 }

@@ -55,12 +55,11 @@ export function generateCsv(trips: Trip[]): string {
 export async function exportAndShareCsv(trips: Trip[]): Promise<void> {
   const csv = generateCsv(trips);
   const fileName = `mileage-export-${new Date().toISOString().split('T')[0]}.csv`;
-  const filePath = Paths.cache.uri + '/' + fileName;
 
-  const file = new File(filePath);
-  file.text = csv;
+  const file = new File(Paths.cache, fileName);
+  file.write(csv);
 
-  await Sharing.shareAsync(filePath, {
+  await Sharing.shareAsync(file.uri, {
     mimeType: 'text/csv',
     dialogTitle: 'Export Mileage Data',
     UTI: 'public.comma-separated-values-text',

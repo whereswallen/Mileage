@@ -11,6 +11,7 @@ import {
 type TripCategory = 'business' | 'personal' | 'medical' | 'charity';
 
 interface ActiveTripState {
+  mode: 'off' | 'monitoring' | 'recording';
   isTracking: boolean;
   startTime: Date | null;
   currentKm: number;
@@ -18,6 +19,7 @@ interface ActiveTripState {
   category: TripCategory;
   purpose: string;
   vehicleId: number | null;
+  lastFixAt: Date | null;
 }
 
 interface TripTrackerContextValue {
@@ -31,6 +33,7 @@ interface TripTrackerContextValue {
 function readEngineState(): ActiveTripState {
   const live = getLiveTripState();
   return {
+    mode: live.mode,
     isTracking: live.isTracking,
     startTime: live.startTime,
     currentKm: live.currentKm,
@@ -38,6 +41,7 @@ function readEngineState(): ActiveTripState {
     category: live.category,
     purpose: live.purpose,
     vehicleId: live.vehicleId,
+    lastFixAt: live.lastFixAt,
   };
 }
 

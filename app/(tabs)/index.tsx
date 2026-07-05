@@ -11,6 +11,15 @@ import { useThemeContext } from '../../contexts/ThemeContext';
 import { useTripTracker } from '../../contexts/TripTrackerContext';
 import { useDashboardStats } from '../../hooks/useDashboardStats';
 
+function formatFixAge(fixAt: Date): string {
+  const seconds = Math.floor((Date.now() - fixAt.getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} h ago`;
+}
+
 export default function DashboardScreen(): React.JSX.Element {
   const { colors } = useThemeContext();
   const { tripState } = useTripTracker();
@@ -41,6 +50,41 @@ export default function DashboardScreen(): React.JSX.Element {
           </Text>
         </TouchableOpacity>
       )}
+
+      <TouchableOpacity
+        style={[styles.trackerStatusCard, { backgroundColor: colors.surface }]}
+        onPress={() => router.push('/settings/tracking')}
+      >
+        <View
+          style={[
+            styles.statusDot,
+            {
+              backgroundColor:
+                tripState.mode === 'recording'
+                  ? colors.success
+                  : tripState.mode === 'monitoring'
+                    ? colors.primary
+                    : colors.error,
+            },
+          ]}
+        />
+        <View style={styles.statusTextWrap}>
+          <Text style={[styles.statusTitle, { color: colors.text }]}>
+            {tripState.mode === 'recording'
+              ? 'Recording trip'
+              : tripState.mode === 'monitoring'
+                ? 'Auto-tracking on — waiting for trip'
+                : 'Auto-tracking off'}
+          </Text>
+          {tripState.mode !== 'off' && (
+            <Text style={[styles.statusSub, { color: colors.textSecondary }]}>
+              {tripState.lastFixAt
+                ? `Last GPS fix ${formatFixAge(tripState.lastFixAt)}`
+                : 'No GPS fix yet'}
+            </Text>
+          )}
+        </View>
+      </TouchableOpacity>
 
       <View style={styles.statsRow}>
         <View style={[styles.statCard, { backgroundColor: colors.surface }]}>
@@ -134,6 +178,30 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 24,
     fontWeight: '700',
+  },
+  trackerStatusCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 16,
+    gap: 10,
+  },
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  statusTextWrap: {
+    flex: 1,
+  },
+  statusTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  statusSub: {
+    fontSize: 12,
+    marginTop: 2,
   },
   statsRow: {
     flexDirection: 'row',

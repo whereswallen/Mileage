@@ -18,6 +18,8 @@ const SPEED_START_KMH = 10; // driving speed that triggers auto-start
 const SPEED_MOVING_KMH = 5; // movement that resets the auto-stop idle timer
 const JITTER_MIN_M = 15; // ignore GPS drift below this displacement
 const MIN_AUTO_TRIP_KM = 0.3; // discard auto-detected trips shorter than this
+const START_DISPLACEMENT_KM = 0.25; // displacement fallback trigger distance
+const MONITOR_BUFFER_MS = 300000; // lead-in window kept while monitoring
 const SNAPSHOT_KEY = 'active_trip_snapshot';
 const SNAPSHOT_EVERY_N_POINTS = 8;
 
@@ -48,6 +50,7 @@ interface LiveTripState {
   category: TripCategory;
   purpose: string;
   vehicleId: number | null;
+  lastFixAt: Date | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +69,7 @@ let monitorBuffer: EnginePoint[] = [];
 let trip: TripSnapshot | null = null;
 let pointsSinceSnapshot = 0;
 let finalizing = false;
+let lastFixAt: number | null = null;
 
 const listeners = new Set<() => void>();
 
@@ -89,6 +93,7 @@ export function getLiveTripState(): LiveTripState {
     category: trip?.category ?? 'business',
     purpose: trip?.purpose ?? '',
     vehicleId: trip?.vehicleId ?? null,
+    lastFixAt: lastFixAt ? new Date(lastFixAt) : null,
   };
 }
 
@@ -113,10 +118,13 @@ export function setLivePurpose(purpose: string): void {
 // ---------------------------------------------------------------------------
 
 function monitorOptions(): Location.LocationTaskOptions {
+  // High accuracy (GPS) is required: balanced/fused fixes on Android often
+  // arrive without speed and too sparsely for driving detection to trigger.
+  // distanceInterval gates updates while parked, so battery cost stays low.
   return {
-    accuracy: Location.Accuracy.Balanced,
-    timeInterval: 10000,
-    distanceInterval: 30,
+    accuracy: Location.Accuracy.High,
+    timeInterval: 15000,
+    distanceInterval: 50,
     showsBackgroundLocationIndicator: true,
     foregroundService: {
       notificationTitle: 'Mileage Tracker',
@@ -128,10 +136,12 @@ function monitorOptions(): Location.LocationTaskOptions {
 }
 
 function recordOptions(): Location.LocationTaskOptions {
+  // distanceInterval must be 0: updates have to keep flowing while parked,
+  // because the auto-stop idle check only runs when an update arrives.
   return {
     accuracy: Location.Accuracy.High,
     timeInterval: 4000,
-    distanceInterval: 10,
+    distanceInterval: 0,
     showsBackgroundLocationIndicator: true,
     foregroundService: {
       notificationTitle: 'Mileage Tracker',
@@ -415,19 +425,31 @@ export async function handleLocationUpdates(
 
   for (const loc of locations) {
     const point = toEnginePoint(loc);
+    lastFixAt = point.t;
 
     if (mode === 'monitoring') {
-      const prev = monitorBuffer[monitorBuffer.length - 1] ?? null;
-      const speed = effectiveSpeedKmh(prev, point);
       monitorBuffer.push(point);
-
-      // Keep only the last 3 minutes of lead-in.
-      const cutoff = point.t - 180000;
+      const cutoff = point.t - MONITOR_BUFFER_MS;
       monitorBuffer = monitorBuffer.filter((p) => p.t >= cutoff);
 
-      // Two consecutive updates at driving speed → start a trip.
-      const prevSpeed = prev ? effectiveSpeedKmh(monitorBuffer[monitorBuffer.length - 3] ?? null, prev) : 0;
-      if (speed >= SPEED_START_KMH && prevSpeed >= SPEED_START_KMH) {
+      // GPS doppler speed is reliable when present — one fast fix is enough.
+      let driving = point.speed != null && point.speed >= SPEED_START_KMH;
+
+      // Fallback for fixes without speed (or sparse updates): moved far
+      // enough from any recent buffered point at a driving pace.
+      if (!driving) {
+        for (const old of monitorBuffer) {
+          if (old.t >= point.t) continue;
+          const km = haversineKm(old.lat, old.lng, point.lat, point.lng);
+          const hours = (point.t - old.t) / 3600000;
+          if (km >= START_DISPLACEMENT_KM && km / hours >= SPEED_START_KMH) {
+            driving = true;
+            break;
+          }
+        }
+      }
+
+      if (driving) {
         if (await isPaused()) continue;
         await beginRecording(monitorBuffer, false);
       }

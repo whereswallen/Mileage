@@ -5,10 +5,12 @@ import {
   StyleSheet,
   TextInput,
   Switch,
+  Alert,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useThemeContext } from '../../contexts/ThemeContext';
 import { useSettings } from '../../hooks/useSettings';
+import { startMonitoring, stopMonitoring } from '../../services/autoTracking';
 
 export default function TrackingSettingsScreen(): React.JSX.Element {
   const { colors } = useThemeContext();
@@ -31,6 +33,22 @@ export default function TrackingSettingsScreen(): React.JSX.Element {
   const handleAutoTrackChange = async (value: boolean) => {
     setAutoTrack(value);
     await updateSetting('auto_track_enabled', value.toString());
+
+    if (value) {
+      try {
+        await startMonitoring(true);
+      } catch {
+        // Permission denied — revert the toggle.
+        setAutoTrack(false);
+        await updateSetting('auto_track_enabled', 'false');
+        Alert.alert(
+          'Permission needed',
+          'Auto-tracking needs location access set to "Allow all the time". Enable it in system settings, then turn auto-track back on.'
+        );
+      }
+    } else {
+      await stopMonitoring();
+    }
   };
 
   const handleAutoStopChange = async (value: string) => {

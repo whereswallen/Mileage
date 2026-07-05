@@ -9,6 +9,7 @@ import {
 import { useFocusEffect } from 'expo-router';
 import { useThemeContext } from '../../contexts/ThemeContext';
 import { useSettings } from '../../hooks/useSettings';
+import { syncAutoTracking } from '../../services/autoTracking';
 
 export default function PauseTrackingScreen(): React.JSX.Element {
   const { colors } = useThemeContext();
@@ -40,6 +41,7 @@ export default function PauseTrackingScreen(): React.JSX.Element {
       setIsPaused(false);
       setPauseUntil(null);
       await updateSetting('pause_until', '');
+      await syncAutoTracking();
     } else {
       // Pause for 1 day by default
       await pauseFor(1);
@@ -53,12 +55,14 @@ export default function PauseTrackingScreen(): React.JSX.Element {
     setIsPaused(true);
     setPauseUntil(isoStr);
     await updateSetting('pause_until', isoStr);
+    await syncAutoTracking();
   };
 
   const handleResume = async () => {
     setIsPaused(false);
     setPauseUntil(null);
     await updateSetting('pause_until', '');
+    await syncAutoTracking();
   };
 
   const durations = [

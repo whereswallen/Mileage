@@ -5,6 +5,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   TextInput,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useThemeContext } from '../contexts/ThemeContext';
@@ -22,7 +23,15 @@ export default function TrackTripScreen(): React.JSX.Element {
   useEffect(() => {
     if (!tripState.isTracking) {
       const doStart = async () => {
-        await startTrip();
+        try {
+          await startTrip();
+        } catch {
+          Alert.alert(
+            'Location permission needed',
+            'Trip tracking needs location access. Grant it in system settings and try again.'
+          );
+          router.back();
+        }
       };
       doStart();
     }

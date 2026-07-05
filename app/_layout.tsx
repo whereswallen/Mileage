@@ -7,6 +7,7 @@ import { VehicleProvider } from '../contexts/VehicleContext';
 import { TripTrackerProvider } from '../contexts/TripTrackerContext';
 import { getDatabase } from '../db/schema';
 import { setupNotifications } from '../services/notification';
+import { initAutoTracking } from '../services/autoTracking';
 
 function RootStack(): React.JSX.Element {
   const { colors } = useThemeContext();
@@ -44,6 +45,7 @@ export default function RootLayout(): React.JSX.Element {
     const init = async () => {
       await getDatabase();
       await setupNotifications();
+      await initAutoTracking();
     };
     init();
   }, []);

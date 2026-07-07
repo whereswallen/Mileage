@@ -27,8 +27,11 @@ interface DiagView {
   lastLat: number | null;
   lastLng: number | null;
   lastSpeedKmh: number | null;
+  lastAccuracyM: number | null;
   lastError: string | null;
   serviceRunning: boolean;
+  servicesEnabled: boolean;
+  precise: 'fine' | 'coarse' | 'none' | null;
   mode: string;
 }
 
@@ -208,6 +211,33 @@ export default function TrackingSettingsScreen(): React.JSX.Element {
         </View>
         <View style={styles.diagRow}>
           <Text style={[styles.diagKey, { color: colors.textSecondary }]}>
+            Precise location
+          </Text>
+          <Text
+            style={[
+              styles.diagVal,
+              { color: diag?.precise === 'fine' ? colors.success : colors.error },
+            ]}
+          >
+            {diag?.precise == null
+              ? '…'
+              : diag.precise === 'fine'
+                ? 'precise'
+                : diag.precise === 'coarse'
+                  ? 'APPROXIMATE'
+                  : 'none'}
+          </Text>
+        </View>
+        <View style={styles.diagRow}>
+          <Text style={[styles.diagKey, { color: colors.textSecondary }]}>
+            Location services
+          </Text>
+          <Text style={[styles.diagVal, { color: diag?.servicesEnabled ? colors.success : colors.error }]}>
+            {diag ? (diag.servicesEnabled ? 'on' : 'OFF') : '…'}
+          </Text>
+        </View>
+        <View style={styles.diagRow}>
+          <Text style={[styles.diagKey, { color: colors.textSecondary }]}>
             GPS fixes received
           </Text>
           <Text style={[styles.diagVal, { color: colors.text, fontWeight: '700' }]}>
@@ -224,6 +254,12 @@ export default function TrackingSettingsScreen(): React.JSX.Element {
           <Text style={[styles.diagKey, { color: colors.textSecondary }]}>Last speed</Text>
           <Text style={[styles.diagVal, { color: colors.text }]}>
             {diag?.lastSpeedKmh != null ? `${diag.lastSpeedKmh.toFixed(0)} km/h` : 'no speed'}
+          </Text>
+        </View>
+        <View style={styles.diagRow}>
+          <Text style={[styles.diagKey, { color: colors.textSecondary }]}>Fix accuracy</Text>
+          <Text style={[styles.diagVal, { color: colors.text }]}>
+            {diag?.lastAccuracyM != null ? `±${diag.lastAccuracyM.toFixed(0)} m` : '—'}
           </Text>
         </View>
         {diag?.lastLat != null && (
@@ -243,6 +279,27 @@ export default function TrackingSettingsScreen(): React.JSX.Element {
           </View>
         )}
       </View>
+
+      {diag?.precise === 'coarse' && (
+        <View style={[styles.warnCard, { backgroundColor: colors.error }]}>
+          <Text style={styles.warnTitle}>Precise location is OFF</Text>
+          <Text style={styles.warnBody}>
+            Android is only giving this app approximate location (~2 km), so
+            driving can never be detected. Fix: open system Settings → Apps →
+            Mileage Tracker → Permissions → Location and turn ON "Use precise
+            location".
+          </Text>
+        </View>
+      )}
+
+      {diag?.servicesEnabled === false && (
+        <View style={[styles.warnCard, { backgroundColor: colors.error }]}>
+          <Text style={styles.warnTitle}>Location services are OFF</Text>
+          <Text style={styles.warnBody}>
+            Turn on Location in your phone's quick settings.
+          </Text>
+        </View>
+      )}
 
       {permission === false && (
         <TouchableOpacity
@@ -345,6 +402,21 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+  },
+  warnCard: {
+    borderRadius: 10,
+    padding: 14,
+    gap: 6,
+  },
+  warnTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  warnBody: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    lineHeight: 18,
   },
   button: {
     borderRadius: 10,

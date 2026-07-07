@@ -6,7 +6,7 @@ import { getSetting, setSetting } from '../db/queries/settings';
 import { getDefaultVehicle } from '../db/queries/vehicles';
 import { classifyTrip } from './autoClassification';
 import { reverseGeocode } from './geocoding';
-import { notifyTripEnded } from './notification';
+import { notifyTripEnded, notifyTripStarted } from './notification';
 import { haversineKm } from '../utils/geo';
 
 export const BACKGROUND_LOCATION_TASK = 'BACKGROUND_LOCATION_TASK';
@@ -82,8 +82,11 @@ interface Diagnostics {
   lastLat: number | null;
   lastLng: number | null;
   lastSpeedKmh: number | null;
+  lastAccuracyM: number | null;
   lastError: string | null;
   serviceRunning: boolean;
+  servicesEnabled: boolean;
+  precise: 'fine' | 'coarse' | 'none' | null;
   mode: TrackingMode;
 }
 
@@ -93,19 +96,86 @@ const diag: Diagnostics = {
   lastLat: null,
   lastLng: null,
   lastSpeedKmh: null,
+  lastAccuracyM: null,
   lastError: null,
   serviceRunning: false,
+  servicesEnabled: true,
+  precise: null,
   mode: 'off',
 };
 
+const DIAG_STATS_KEY = 'diag_stats';
+let fixesSinceDiagPersist = 0;
+
+// Counters must survive process restarts: fixes handled by a headless
+// background process would otherwise show as 0 when the UI process opens.
+async function persistDiagStats(): Promise<void> {
+  fixesSinceDiagPersist = 0;
+  try {
+    await setSetting(
+      DIAG_STATS_KEY,
+      JSON.stringify({
+        updatesReceived: diag.updatesReceived,
+        lastFixAt: diag.lastFixAt,
+        lastSpeedKmh: diag.lastSpeedKmh,
+        lastAccuracyM: diag.lastAccuracyM,
+        lastError: diag.lastError,
+      })
+    );
+  } catch {
+    // Diagnostics persistence must never break tracking.
+  }
+}
+
+async function loadDiagStats(): Promise<void> {
+  try {
+    const raw = await getSetting(DIAG_STATS_KEY);
+    if (!raw) return;
+    const stored = JSON.parse(raw) as Partial<Diagnostics>;
+    if (
+      typeof stored.updatesReceived === 'number' &&
+      stored.updatesReceived > diag.updatesReceived
+    ) {
+      diag.updatesReceived = stored.updatesReceived;
+      diag.lastFixAt = stored.lastFixAt ?? diag.lastFixAt;
+      diag.lastSpeedKmh = stored.lastSpeedKmh ?? diag.lastSpeedKmh;
+      diag.lastAccuracyM = stored.lastAccuracyM ?? diag.lastAccuracyM;
+      diag.lastError = stored.lastError ?? diag.lastError;
+    }
+  } catch {
+    // Ignore corrupt stats.
+  }
+}
+
 export async function getDiagnostics(): Promise<Diagnostics> {
+  await restoreIfNeeded().catch(() => {});
+
   let serviceRunning = false;
   try {
     serviceRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
   } catch {
     serviceRunning = false;
   }
-  return { ...diag, serviceRunning, mode };
+
+  let servicesEnabled = true;
+  try {
+    servicesEnabled = await Location.hasServicesEnabledAsync();
+  } catch {
+    // Assume enabled if the check itself fails.
+  }
+
+  // Android 12+ can grant location with only "approximate" accuracy —
+  // fixes then arrive rarely with ~2 km error and no speed, which makes
+  // driving detection impossible while everything else looks healthy.
+  let precise: 'fine' | 'coarse' | 'none' | null = null;
+  try {
+    const fg = await Location.getForegroundPermissionsAsync();
+    precise = fg.android?.accuracy ?? (fg.status === 'granted' ? 'fine' : 'none');
+  } catch {
+    precise = null;
+  }
+
+  return { ...diag, serviceRunning, servicesEnabled, precise, mode };
 }
 
 const listeners = new Set<() => void>();
@@ -260,6 +330,8 @@ async function restoreIfNeeded(): Promise<void> {
   if (restored) return;
   restored = true;
 
+  await loadDiagStats();
+
   const raw = await getSetting(SNAPSHOT_KEY);
   if (!raw) return;
 
@@ -314,6 +386,9 @@ async function beginRecording(seed: EnginePoint[], isManual: boolean): Promise<v
     await startUpdates(recordOptions());
   } catch (err) {
     console.error('[AutoTracking] Failed to switch to recording profile:', err);
+  }
+  if (!isManual) {
+    notifyTripStarted().catch(() => {});
   }
   emit();
 }
@@ -475,6 +550,11 @@ export async function handleLocationUpdates(
     diag.lastLat = point.lat;
     diag.lastLng = point.lng;
     diag.lastSpeedKmh = point.speed;
+    diag.lastAccuracyM = loc.coords.accuracy ?? null;
+    fixesSinceDiagPersist++;
+    if (fixesSinceDiagPersist >= 6) {
+      await persistDiagStats();
+    }
 
     try {
       if (mode === 'monitoring') {

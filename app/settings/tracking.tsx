@@ -10,6 +10,8 @@ import {
   ScrollView,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
+import * as Battery from 'expo-battery';
+import * as IntentLauncher from 'expo-intent-launcher';
 import { useThemeContext } from '../../contexts/ThemeContext';
 import { useSettings } from '../../hooks/useSettings';
 import {
@@ -52,6 +54,7 @@ export default function TrackingSettingsScreen(): React.JSX.Element {
   const [autoStopMinutes, setAutoStopMinutes] = useState('10');
   const [diag, setDiag] = useState<DiagView | null>(null);
   const [permission, setPermission] = useState<boolean | null>(null);
+  const [batteryOptimized, setBatteryOptimized] = useState<boolean | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -70,9 +73,11 @@ export default function TrackingSettingsScreen(): React.JSX.Element {
     const tick = async () => {
       const d = await getDiagnostics();
       const perm = await hasTrackingPermissions();
+      const optimized = await Battery.isBatteryOptimizationEnabledAsync().catch(() => null);
       if (active) {
         setDiag(d);
         setPermission(perm);
+        setBatteryOptimized(optimized);
       }
     };
     tick();
@@ -82,6 +87,28 @@ export default function TrackingSettingsScreen(): React.JSX.Element {
       clearInterval(interval);
     };
   }, []);
+
+  const handleAllowBackground = async () => {
+    try {
+      // Pops Android's official "let this app run in the background" dialog.
+      await IntentLauncher.startActivityAsync(
+        IntentLauncher.ActivityAction.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+        { data: 'package:com.mileagetracker.app' }
+      );
+    } catch {
+      // Some OEMs block the direct dialog — fall back to the settings list.
+      try {
+        await IntentLauncher.startActivityAsync(
+          IntentLauncher.ActivityAction.IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+        );
+      } catch {
+        Alert.alert(
+          'Could not open settings',
+          'Open system Settings → Apps → Mileage Tracker → Battery and choose Unrestricted.'
+        );
+      }
+    }
+  };
 
   const handleAutoTrackChange = async (value: boolean) => {
     setAutoTrack(value);
@@ -238,6 +265,23 @@ export default function TrackingSettingsScreen(): React.JSX.Element {
         </View>
         <View style={styles.diagRow}>
           <Text style={[styles.diagKey, { color: colors.textSecondary }]}>
+            Battery optimization
+          </Text>
+          <Text
+            style={[
+              styles.diagVal,
+              { color: batteryOptimized === false ? colors.success : colors.error },
+            ]}
+          >
+            {batteryOptimized === null
+              ? '…'
+              : batteryOptimized
+                ? 'RESTRICTING APP'
+                : 'exempt'}
+          </Text>
+        </View>
+        <View style={styles.diagRow}>
+          <Text style={[styles.diagKey, { color: colors.textSecondary }]}>
             GPS fixes received
           </Text>
           <Text style={[styles.diagVal, { color: colors.text, fontWeight: '700' }]}>
@@ -299,6 +343,26 @@ export default function TrackingSettingsScreen(): React.JSX.Element {
             Turn on Location in your phone's quick settings.
           </Text>
         </View>
+      )}
+
+      {batteryOptimized === true && (
+        <View style={[styles.warnCard, { backgroundColor: colors.error }]}>
+          <Text style={styles.warnTitle}>Battery optimization is restricting this app</Text>
+          <Text style={styles.warnBody}>
+            Android may suspend GPS delivery during drives. Tap the button
+            below and choose "Allow" so tracking keeps running in the
+            background.
+          </Text>
+        </View>
+      )}
+
+      {batteryOptimized === true && (
+        <TouchableOpacity
+          style={[styles.button, { backgroundColor: colors.primary }]}
+          onPress={handleAllowBackground}
+        >
+          <Text style={styles.buttonText}>Allow background usage</Text>
+        </TouchableOpacity>
       )}
 
       {permission === false && (
